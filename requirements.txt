@@ -1,0 +1,17 @@
+# Core Optimization Engine
+ortools>=9.8.0
+
+# Spatial Indexing & Mathematics (For the 10 Nearest Neighbors KD-Tree)
+scipy>=1.10.0
+numpy>=1.24.0
+
+# Asynchronous HTTP Engine (To solve the OTP matrix bottleneck)
+aiohttp>=3.9.0
+
+# Web Framework & API Routing
+Flask>=3.0.0
+flask-cors>=4.0.0
+
+# Data Engineering & Management
+pandas>=2.0.0
+python-dotenv>=1.0.0
