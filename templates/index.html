@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hong Kong Multi-Modal Map Router</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fb; margin: 0; padding: 20px; color: #333; }
+        .app-layout { display: flex; flex-direction: column; max-width: 1200px; margin: 0 auto; gap: 20px; }
+        .control-panel { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .map-results-container { display: grid; grid-template-columns: 1fr; gap: 20px; }
+        @media(min-width: 768px) { .map-results-container { grid-template-columns: 380px 1fr; } }
+        h1 { margin-top: 0; color: #111; font-size: 24px; border-bottom: 2px solid #eaeaea; padding-bottom: 10px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: 600; margin-bottom: 5px; font-size: 14px; }
+        input[type="text"], input[type="date"], input[type="time"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 15px; }
+        .checkbox-group { display: flex; gap: 12px; margin-top: 5px; flex-wrap: wrap; background: #f8fafc; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0; }
+        .checkbox-item { display: flex; align-items: center; gap: 5px; font-size: 13px; }
+        button { width: 100%; background: #007bff; color: white; border: none; padding: 12px; border-radius: 6px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #0056b3; }
+        #map { height: 600px; border-radius: 12px; border: 1px solid #ccc; box-shadow: 0 4px 6px rgba(0,0,0,0.05); width: 100%; }
+        
+        /* Left Sidebar Cards Styling */
+        #resultsPanel { height: 600px; overflow-y: auto; padding-right: 5px; }
+        .itinerary-card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; margin-bottom: 12px; background: #fafbfc; cursor: pointer; transition: all 0.25s ease; }
+        .itinerary-card:hover { border-color: #007bff; background: #f6faff; }
+        .itinerary-card.active { border-color: #007bff; background: #f0f7ff; box-shadow: 0 4px 12px rgba(0, 123, 255, 0.15); }
+        .itinerary-summary { display: flex; justify-content: space-between; font-weight: bold; font-size: 15px; color: #007bff; }
+        
+        /* Step-by-Step Breakdown Timeline Styling */
+        .details-timeline { margin-top: 14px; padding-top: 14px; border-top: 1px dashed #cbd5e1; display: none; }
+        .itinerary-card.active .details-timeline { display: block; }
+        .timeline-item { position: relative; padding-left: 20px; margin-bottom: 12px; font-size: 13px; color: #475569; }
+        .timeline-item::before { content: ''; position: absolute; left: 0; top: 5px; width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
+        .timeline-item.transit::before { background: #007bff; width: 10px; height: 10px; left: -1px; }
+        .timeline-time { font-weight: bold; color: #1e293b; margin-right: 6px; }
+        .leg-tag { font-weight: bold; text-transform: uppercase; font-size: 10px; padding: 1px 4px; border-radius: 3px; color: white; margin-right: 4px; }
+        
+        .error { background: #ffe3e3; color: #bd1a1a; padding: 12px; border-radius: 6px; margin-bottom: 15px; font-size: 14px; display: none; }
+    </style>
+</head>
+<body>
+
+<div class="app-layout">
+    <div class="control-panel">
+        <h1>Hong Kong Multi-Modal Route Dashboard</h1>
+        <div id="errorMessage" class="error"></div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+            <div class="form-group">
+                <label for="fromLocation">From (Origin)</label>
+                <input type="text" id="fromLocation" value="LOHAS Park MTR Station">
+            </div>
+            <div class="form-group">
+                <label for="toLocation">To (Destination)</label>
+                <input type="text" id="toLocation" value="Cheung Chau Ferry Pier">
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+            <div class="form-group">
+                <label for="travelDate">Date</label>
+                <input type="date" id="travelDate" value="{{ default_date }}">
+            </div>
+            <div class="form-group">
+                <label for="travelTime">Time</label>
+                <input type="time" id="travelTime" value="{{ default_time }}">
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>Select Allowed Methods of Transport</label>
+            <div class="checkbox-group">
+                <div class="checkbox-item"><input type="checkbox" id="modeWalk" value="WALK" checked><label for="modeWalk">Walk</label></div>
+                <div class="checkbox-item"><input type="checkbox" id="modeSubway" value="SUBWAY" checked><label for="modeSubway">MTR (Subway/Rail)</label></div>
+                <div class="checkbox-item"><input type="checkbox" id="modeBus" value="BUS" checked><label for="modeBus">Buses</label></div>
+                <div class="checkbox-item"><input type="checkbox" id="modeFerry" value="FERRY" checked><label for="modeFerry">Ferries</label></div>
+                <div class="checkbox-item"><input type="checkbox" id="modeTram" value="TRAM" checked><label for="modeTram">Tramway</label></div>
+                <div class="checkbox-item"><input type="checkbox" id="modeBicycle" value="BICYCLE"><label for="modeBicycle">Bicycle</label></div>
+            </div>
+        </div>
+
+        <button onclick="calculateRoute()">Generate Route Alternatives</button>
+    </div>
+
+    <div class="map-results-container">
+        <div id="resultsPanel"><h3>Routes</h3><p style="color:#666; font-size:14px;">Enter details above to populate route choices.</p></div>
+        <div id="map"></div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([22.3193, 114.1694], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+}).addTo(map);
+
+let currentRouteLayers = [];
+let structuralItinerariesGlobal = [];
+
+function decodePolyline(encoded) {
+    if (!encoded) return [];
+    let len = encoded.length, index = 0, array = [], lat = 0, lng = 0;
+    while (index < len) {
+        let b, shift = 0, result = 0;
+        do {
+            b = encoded.charCodeAt(index++) - 63;
+            result |= (b & 0x1f) << shift;
+            shift += 5;
+        } while (b >= 0x20);
+        let dlat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+        lat += dlat;
+        shift = 0; result = 0;
+        do {
+            b = encoded.charCodeAt(index++) - 63;
+            result |= (b & 0x1f) << shift;
+            shift += 5;
+        } while (b >= 0x20);
+        let dlng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+        lng += dlng;
+        array.push([lat * 1e-5, lng * 1e-5]);
+    }
+    return array;
+}
+
+// Helper to format timestamps from OTP server into readable hours and minutes
+function formatTime(timestamp) {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function calculateRoute() {
+    const errDiv = document.getElementById('errorMessage');
+    const resDiv = document.getElementById('resultsPanel');
+    errDiv.style.display = 'none';
+    resDiv.innerHTML = '<h4>Computing pathways...</h4>';
+    
+    currentRouteLayers.forEach(layer => map.removeLayer(layer));
+    currentRouteLayers = [];
+
+    const modes = [];
+    if(document.getElementById('modeWalk').checked) modes.push('WALK');
+    if(document.getElementById('modeSubway').checked) {
+        modes.push('SUBWAY');
+        modes.push('RAIL');
+    }
+    if(document.getElementById('modeTram').checked) modes.push('TRAM');
+    if(document.getElementById('modeBus').checked) modes.push('BUS');
+    if(document.getElementById('modeFerry').checked) modes.push('FERRY');
+    if(document.getElementById('modeBicycle').checked) modes.push('BICYCLE');
+
+    if(modes.length === 0 || (modes.length === 1 && modes[0] === 'WALK')) {
+        modes.push('TRANSIT');
+    }
+
+    const payload = {
+        from_location: document.getElementById('fromLocation').value,
+        to_location: document.getElementById('toLocation').value,
+        date: document.getElementById('travelDate').value,
+        time: document.getElementById('travelTime').value,
+        modes: modes
+    };
+
+    fetch('/get-route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Server rejected parameters.');
+        return data;
+    })
+    .then(data => {
+        const uniqueItineraries = [];
+        const seenSignatures = new Set();
+
+        data.itineraries.forEach(itin => {
+            let transitSignature = itin.legs
+                .filter(leg => leg.mode !== 'WALK') 
+                .map(leg => `${leg.mode}-${leg.route ? leg.route.shortName : ''}`)
+                .join('|');
+            
+            let fullSignature = `${transitSignature}|${itin.endTime}`;
+
+            if (!seenSignatures.has(fullSignature)) {
+                seenSignatures.add(fullSignature);
+                uniqueItineraries.push(itin);
+            }
+        });
+
+        // OVERRIDE OTP SORTING: Force sort the unique routes by fastest total duration
+        uniqueItineraries.sort((a, b) => a.duration - b.duration);
+        
+        // Cap the results at exactly 3 (or fewer if less than 3 exist)
+        data.itineraries = uniqueItineraries.slice(0, 3);
+
+        structuralItinerariesGlobal = data.itineraries;
+        
+        // UI UPDATE: Display the exact resolved names in a distinct banner
+        resDiv.innerHTML = `
+            <div style="background: #e2e8f0; border-left: 4px solid #007bff; padding: 12px; border-radius: 6px; margin-bottom: 15px; font-size: 13px;">
+                <div style="margin-bottom: 6px;"><b>Resolved Origin:</b> ${data.from.name}</div>
+                <div><b>Resolved Dest:</b> ${data.to.name}</div>
+            </div>
+            <h3 style="margin-bottom: 10px;">Options Found:</h3>
+        `;
+        
+        if (data.itineraries.length === 0) {
+            resDiv.innerHTML += '<p style="font-size:14px; color:#666;">No continuous options found.</p>';
+            return;
+        }
+
+        const startMarker = L.marker([data.from.lat, data.from.lon]).bindPopup(`Start: ${data.from.name}`).addTo(map);
+        const endMarker = L.marker([data.to.lat, data.to.lon]).bindPopup(`End: ${data.to.name}`).addTo(map);
+        currentRouteLayers.push(startMarker, endMarker);
+
+        data.itineraries.forEach((itin, index) => {
+            // (The rest of your card generation loop remains identical below here)
+            const totalMin = Math.round(itin.duration / 60);
+            
+            let summaryString = "";
+            let timelineHtml = `<div class="details-timeline"><h4>Journey Steps:</h4>`;
+
+            itin.legs.forEach(leg => {
+                const legMin = Math.round(leg.duration / 60);
+                const routeName = leg.route && leg.route.shortName ? ` ${leg.route.shortName}` : '';
+                const isTransit = leg.mode !== 'WALK';
+                
+                if(isTransit) {
+                    summaryString += ` → [${leg.mode}${routeName}]`;
+                }
+
+                let bgTagColor = '#3b82f6';
+                if (leg.mode === 'SUBWAY' || leg.mode === 'RAIL') bgTagColor = '#dc2626';
+                if (leg.mode === 'BUS') bgTagColor = '#eab308';
+                if (leg.mode === 'FERRY') bgTagColor = '#059669';
+
+                timelineHtml += `
+                    <div class="timeline-item ${isTransit ? 'transit' : ''}">
+                        <span class="timeline-time">${formatTime(leg.startTime)}</span>
+                        <span class="leg-tag" style="background:${bgTagColor}">${leg.mode}</span> 
+                        Board at <b>${leg.from.name || 'Station'}</b> ${routeName ? 'Line'+routeName : ''} (${legMin} mins)
+                    </div>
+                    <div class="timeline-item" style="margin-bottom: 15px; padding-left: 20px;">
+                        <span class="timeline-time">${formatTime(leg.endTime)}</span>
+                        Alight at <b>${leg.to.name || 'Destination'}</b>
+                    </div>
+                `;
+            });
+            timelineHtml += `</div>`;
+
+            let card = document.createElement('div');
+            card.className = "itinerary-card";
+            card.id = `card-${index}`;
+            card.innerHTML = `
+                <div class="itinerary-summary">
+                    <span>Option ${index + 1}</span>
+                    <span>${totalMin} mins</span>
+                </div>
+                <div style="font-size:12px; color:#555; margin-top:4px; font-weight:500;">Walk: ${Math.round(itin.walkTime/60)}m ${summaryString}</div>
+                ${timelineHtml}
+            `;
+            
+            card.onclick = () => highlightItineraryOnMap(index);
+            resDiv.appendChild(card);
+        });
+
+        highlightItineraryOnMap(0);
+    })
+    .catch(err => {
+        resDiv.innerHTML = '<h3>Error</h3>';
+        errDiv.innerText = err.message;
+        errDiv.style.display = 'block';
+    });
+}
+
+function highlightItineraryOnMap(index) {
+    // 1. Toggle visual 'active' state classes across the sidebar layout nodes
+    document.querySelectorAll('.itinerary-card').forEach(c => c.classList.remove('active'));
+    const activeCard = document.getElementById(`card-${index}`);
+    if (activeCard) activeCard.classList.add('active');
+
+    // 2. Wipe previous drawn vectors
+    currentRouteLayers.forEach(layer => {
+        if (layer instanceof L.Polyline && !(layer instanceof L.Marker)) {
+            map.removeLayer(layer);
+        }
+    });
+
+    const itinerary = structuralItinerariesGlobal[index];
+    if (!itinerary) return;
+
+    const bounds = [];
+
+    itinerary.legs.forEach(leg => {
+        if (leg.legGeometry && leg.legGeometry.points) {
+            const points = decodePolyline(leg.legGeometry.points);
+            
+            let color = '#3b82f6'; 
+            if (leg.mode === 'SUBWAY' || leg.mode === 'RAIL') color = '#dc2626'; // MTR
+            if (leg.mode === 'BUS') color = '#eab308';    // Bus
+            if (leg.mode === 'FERRY') color = '#059669';  // Ferry
+            if (leg.mode === 'TRAM') color = '#0284c7';   // Tram
+
+            const isWalk = leg.mode === 'WALK';
+            const polyline = L.polyline(points, {
+                color: color,
+                weight: isWalk ? 4 : 6,
+                dashArray: isWalk ? '5, 10' : null,
+                opacity: 0.85
+            }).addTo(map);
+
+            const routeTitle = leg.route && leg.route.shortName ? ` (Line: ${leg.route.shortName})` : '';
+            polyline.bindPopup(`
+                <div style="font-size: 13px;">
+                    <b style="text-transform: uppercase; color:${color}">${leg.mode}</b>${routeTitle}<br>
+                    <b>From:</b> ${leg.from.name}<br>
+                    <b>To:</b> ${leg.to.name}<br>
+                    <b>Duration:</b> ${Math.round(leg.duration/60)} mins
+                </div>
+            `);
+
+            // --- HOVER & INTERACTION EVENT LISTENERS ---
+            polyline.on('mouseover', function(e) {
+                // Thicken line structure and bring to front for depth
+                this.setStyle({ weight: isWalk ? 7 : 10, opacity: 1.0 });
+                this.openPopup(e.latlng); // Dynamic popups on cursor position
+            });
+
+            polyline.on('mouseout', function() {
+                // Revert style vector on mouse out
+                this.setStyle({ weight: isWalk ? 4 : 6, opacity: 0.85 });
+            });
+            
+            polyline.on('click', function(e) {
+                this.openPopup(e.latlng);
+            });
+
+            currentRouteLayers.push(polyline);
+            points.forEach(p => bounds.push(p));
+        }
+    });
+
+    if(bounds.length > 0) {
+        map.fitBounds(bounds, { padding: [30, 30] });
+    }
+}
+</script>
+</body>
+</html>

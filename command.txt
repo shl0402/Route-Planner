@@ -1,0 +1,2 @@
+java -Xmx4G -jar otp-shaded-2.9.0.jar --build --save ./data
+java -Xmx4G -jar otp-shaded-2.9.0.jar --load ./data
