@@ -9,85 +9,83 @@ app = Flask(__name__)
 OTP_GRAPHQL_URL = "http://localhost:8080/otp/gtfs/v1"
 
 
-def geocode_hk_address(address_text):
+def geocode_hk_address(address_text, page):
     """Robust geocoder using Playwright JS Fetch to bypass WAF and XML viewers."""
     if not address_text:
         return None
 
     print(f"Geocoding: {address_text}...")
 
-    # Initialize Playwright
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            channel="chrome",
-            args=["--incognito"]
-        )
-        page = browser.new_page()
+    # 1. Handle Custom Coordinates bypass (Added this block back)
+    if ',' in address_text:
+        parts = [p.strip() for p in address_text.split(',')]
+        if len(parts) >= 2:
+            try:
+                lat, lon = float(parts[-2]), float(parts[-1])
+                name = parts[0] if len(parts) > 2 else "Custom Coordinates"
+                print(f" -> Found via Custom Coordinates: {name}")
+                return {"lat": lat, "lon": lon, "name": name}
+            except ValueError:
+                pass
 
-        # Navigate to a blank page to initialize the Javascript execution environment
-        page.goto("about:blank")
+    # 2. Try OpenStreetMap (Nominatim)
+    try:
+        nom_url = "https://nominatim.openstreetmap.org/search"
+        query_string = urllib.parse.urlencode({"q": f"{address_text}, Hong Kong", "format": "json", "limit": 1})
+        full_nom_url = f"{nom_url}?{query_string}"
 
-        # 1. Try OpenStreetMap (Nominatim) first
-        try:
-            nom_url = "https://nominatim.openstreetmap.org/search"
-            query_string = urllib.parse.urlencode({"q": f"{address_text}, Hong Kong", "format": "json", "limit": 1})
-            full_nom_url = f"{nom_url}?{query_string}"
+        nom_data = page.evaluate("""async (url) => {
+            const response = await fetch(url, {
+                headers: { 'Accept': 'application/json', 'User-Agent': 'HK-Offline-Routing-App/1.0' }
+            });
+            return await response.json();
+        }""", full_nom_url)
 
-            nom_data = page.evaluate("""async (url) => {
-                const response = await fetch(url, {
-                    headers: { 'Accept': 'application/json', 'User-Agent': 'HK-Offline-Routing-App/1.0' }
-                });
-                return await response.json();
-            }""", full_nom_url)
+        if len(nom_data) > 0:
+            resolved_name = nom_data[0].get('name', address_text)
+            print(f" -> Found via OpenStreetMap: {resolved_name}")
+            return {
+                "lat": float(nom_data[0]['lat']),
+                "lon": float(nom_data[0]['lon']),
+                "name": resolved_name
+            }
+    except Exception as e:
+        print(f"OSM lookup note: {e}")
 
-            if len(nom_data) > 0:
-                resolved_name = nom_data[0].get('name', address_text)
-                print(f" -> Found via OpenStreetMap: {resolved_name}")
-                browser.close()
+    # 3. Fallback to Official HK ALS API
+    try:
+        als_url = "https://www.als.gov.hk/lookup"
+        query_string = urllib.parse.urlencode({"q": address_text, "n": 1})
+        full_als_url = f"{als_url}?{query_string}"
+
+        data = page.evaluate("""async (url) => {
+            const response = await fetch(url, {
+                headers: { 'Accept': 'application/json' }
+            });
+            return await response.json();
+        }""", full_als_url)
+
+        if 'SuggestedAddress' in data and len(data['SuggestedAddress']) > 0:
+            addr_tree = data['SuggestedAddress'][0]['Address']['PremisesAddress']
+            eng_addr = addr_tree.get('EngPremisesAddress', {})
+
+            # THE FIX: Extract geo from addr_tree, not eng_addr
+            geo = addr_tree.get('GeospatialInformation', {})
+
+            resolved_name = eng_addr.get('BuildingName') or eng_addr.get('EngStreet', {}).get(
+                'StreetName') or address_text
+
+            if 'Latitude' in geo and 'Longitude' in geo:
+                print(f" -> Found via HK ALS API: {resolved_name}")
                 return {
-                    "lat": float(nom_data[0]['lat']),
-                    "lon": float(nom_data[0]['lon']),
+                    "lat": float(geo['Latitude']),
+                    "lon": float(geo['Longitude']),
                     "name": resolved_name
                 }
-        except Exception as e:
-            print(f"OSM lookup note: {e}")
+    except Exception as e:
+        print(f"ALS API Error for {address_text}: {e}")
 
-        # 2. Fallback to Official HK ALS API
-        try:
-            als_url = "https://www.als.gov.hk/lookup"
-            query_string = urllib.parse.urlencode({"q": address_text, "n": 1})
-            full_als_url = f"{als_url}?{query_string}"
-
-            data = page.evaluate("""async (url) => {
-                const response = await fetch(url, {
-                    headers: { 'Accept': 'application/json' }
-                });
-                return await response.json();
-            }""", full_als_url)
-
-            if 'SuggestedAddress' in data and len(data['SuggestedAddress']) > 0:
-                addr_tree = data['SuggestedAddress'][0]['Address']['PremisesAddress']
-                eng_addr = addr_tree.get('EngPremisesAddress', {})
-                geo = eng_addr.get('GeospatialInformation', {})
-
-                resolved_name = eng_addr.get('BuildingName') or eng_addr.get('EngStreet', {}).get(
-                    'StreetName') or address_text
-
-                if 'Latitude' in geo and 'Longitude' in geo:
-                    print(f" -> Found via HK ALS API: {resolved_name}")
-                    browser.close()
-                    return {
-                        "lat": float(geo['Latitude']),
-                        "lon": float(geo['Longitude']),
-                        "name": resolved_name
-                    }
-        except Exception as e:
-            print(f"ALS API Error for {address_text}: {e}")
-
-        # Ensure browser is closed if nothing was found
-        browser.close()
-        return None
+    return None
 
 
 # --- FLASK ROUTES ---
@@ -107,9 +105,22 @@ def get_route():
     date_str = req_data.get('date')
     time_str = req_data.get('time')
 
-    # This will now spin up a Playwright browser for each lookup
-    from_coords = geocode_hk_address(from_text)
-    to_coords = geocode_hk_address(to_text)
+    # THE FIX: Initialize Playwright once per route request
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            channel="chrome",
+            args=["--incognito"]
+        )
+        page = browser.new_page()
+        page.goto("about:blank")  # Initialize the JS environment
+
+        # Pass the shared page object to both geocode calls
+        from_coords = geocode_hk_address(from_text, page)
+        to_coords = geocode_hk_address(to_text, page)
+
+        # Ensure browser closes cleanly
+        browser.close()
 
     if not from_coords or not to_coords:
         return jsonify({"error": "Could not resolve addresses to valid coordinates in Hong Kong."}), 400
