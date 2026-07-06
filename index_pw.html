@@ -105,10 +105,15 @@ Metroplaza Tower 1, 223 Hing Fong Road, Kwai Fong</textarea>
             </div>
 
             <div id="geocoding-results-container" class="hidden bg-white p-6 rounded-xl shadow-sm border">
-                <h3 class="font-semibold mb-3 flex items-center text-gray-800">
-                    <i id="geo-status-icon" class="w-5 h-5 mr-2"></i>
-                    Geocoding Results
-                </h3>
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="font-semibold flex items-center text-gray-800">
+                        <i id="geo-status-icon" class="w-5 h-5 mr-2"></i>
+                        Geocoding Results
+                    </h3>
+                    <button id="btn-apply-all" onclick="applyAllManualFixes()" class="hidden bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded text-sm font-medium transition-colors shadow-sm flex items-center">
+                        <i data-lucide="save" class="w-4 h-4 mr-2"></i> Apply All Edits
+                    </button>
+                </div>
                 <ul id="geocoding-list" class="space-y-3 max-h-60 overflow-y-auto pr-2"></ul>
             </div>
 
@@ -281,21 +286,79 @@ Metroplaza Tower 1, 223 Hing Fong Road, Kwai Fong</textarea>
             }
         }
 
-        function handleManualFix(id) {
-            const latVal = document.getElementById(`manual-lat-${id}`).value;
-            const lonVal = document.getElementById(`manual-lon-${id}`).value;
+        function applyAllManualFixes() {
+            let updatesMade = false;
+            let errors = [];
 
-            const parsedLat = parseFloat(latVal);
-            const parsedLon = parseFloat(lonVal);
+            // Loop through all locations and check their input fields
+            locations = locations.map(loc => {
+                const inputEl = document.getElementById(`manual-coord-${loc.id}`);
+                if (!inputEl) return loc;
+
+                const inputVal = inputEl.value.trim();
+                if (!inputVal) return loc; // If the box is empty, skip it and keep original data
+
+                // Parse the input (handles commas, spaces, and tabs)
+                const parts = inputVal.split(/[,\t ]+/).filter(Boolean);
+
+                if (parts.length < 2) {
+                    errors.push(`${loc.originalAddress}: Invalid format. Please use 'Lat, Lon'.`);
+                    return loc;
+                }
+
+                const parsedLat = parseFloat(parts[parts.length - 2]);
+                const parsedLon = parseFloat(parts[parts.length - 1]);
+
+                if (isNaN(parsedLat) || isNaN(parsedLon)) {
+                    errors.push(`${loc.originalAddress}: Could not read numbers.`);
+                    return loc;
+                }
+
+                updatesMade = true;
+                return {
+                    ...loc,
+                    lat: parsedLat.toString(),
+                    lon: parsedLon.toString(),
+                    status: 'ok',
+                    name: `${loc.originalAddress} (Manual Override)`,
+                    score: 'Exact (Coords)'
+                };
+            });
+
+            // Alert the user if any specific rows had unreadable text
+            if (errors.length > 0) {
+                alert("Some coordinates couldn't be saved:\n\n" + errors.join("\n"));
+            }
+
+            // Only re-render the list if we actually changed something
+            if (updatesMade) {
+                renderGeocodingResults();
+            }
+        }
+
+        function handleManualFix(id) {
+            const inputVal = document.getElementById(`manual-coord-${id}`).value.trim();
+
+            // Allow comma, tab, or space separation (Allows mass-pasting directly from Excel cells)
+            const parts = inputVal.split(/[,\t ]+/).filter(Boolean);
+
+            if (parts.length < 2) {
+                alert("Please paste valid coordinates in 'Lat, Lon' format.");
+                return;
+            }
+
+            // Grab the last two numbers in case they pasted a name as well
+            const parsedLat = parseFloat(parts[parts.length - 2]);
+            const parsedLon = parseFloat(parts[parts.length - 1]);
 
             if (isNaN(parsedLat) || isNaN(parsedLon)) {
-                alert("Please enter valid numerical coordinates.");
+                alert("Could not parse numerical coordinates.");
                 return;
             }
 
             locations = locations.map(loc => {
                 if (loc.id === id) {
-                    return { ...loc, lat: parsedLat.toString(), lon: parsedLon.toString(), status: 'ok', name: `${loc.originalAddress} (Manual)` };
+                    return { ...loc, lat: parsedLat.toString(), lon: parsedLon.toString(), status: 'ok', name: `${loc.originalAddress} (Manual Override)`, score: 'Exact (Coords)' };
                 }
                 return loc;
             });
@@ -308,49 +371,96 @@ Metroplaza Tower 1, 223 Hing Fong Road, Kwai Fong</textarea>
             const list = document.getElementById('geocoding-list');
             const icon = document.getElementById('geo-status-icon');
 
-            container.classList.remove('hidden', 'border-red-300', 'border-green-300');
+            container.classList.remove('hidden', 'border-red-300', 'border-green-300', 'border-orange-300');
+            document.getElementById('btn-apply-all').classList.remove('hidden'); // Show the global button
             list.innerHTML = '';
 
             const hasErrors = locations.some(loc => loc.status === 'error');
+            const hasWarnings = locations.some(loc => {
+                if(loc.score && loc.score.includes('/100')) {
+                    return parseFloat(loc.score.split('/')[0]) < 70;
+                }
+                return false;
+            });
+
             const allResolved = locations.length > 0 && !hasErrors;
 
+            // Set main container colors based on worst-case status
             if (hasErrors) {
                 container.classList.add('border-red-300');
                 icon.setAttribute('data-lucide', 'alert-triangle');
-                icon.classList.add('text-red-500');
-                icon.classList.remove('text-green-500');
+                icon.className = 'w-5 h-5 mr-2 text-red-500';
+            } else if (hasWarnings) {
+                container.classList.add('border-orange-300');
+                icon.setAttribute('data-lucide', 'alert-circle');
+                icon.className = 'w-5 h-5 mr-2 text-orange-500';
             } else {
                 container.classList.add('border-green-300');
                 icon.setAttribute('data-lucide', 'check-circle');
-                icon.classList.remove('text-red-500');
-                icon.classList.add('text-green-500');
+                icon.className = 'w-5 h-5 mr-2 text-green-500';
             }
 
             lucide.createIcons();
 
             locations.filter(l => l.status !== 'dummy').forEach(loc => {
+                let numericScore = 100;
+                let isLowScore = false;
+
+                // Check for low score threshold (< 70)
+                if (loc.score && loc.score.includes('/100')) {
+                    numericScore = parseFloat(loc.score.split('/')[0]);
+                    if (numericScore < 70) isLowScore = true;
+                }
+
+                // Dynamic background styling based on confidence
+                let bgClass = 'bg-gray-50 border-gray-200';
+                let statusColor = 'text-green-600';
+
+                if (loc.status === 'error') {
+                    bgClass = 'bg-red-50 border-red-300';
+                    statusColor = 'text-red-600';
+                } else if (isLowScore) {
+                    bgClass = 'bg-orange-50 border-orange-300';
+                    statusColor = 'text-orange-600';
+                }
+
                 const li = document.createElement('li');
-                li.className = `p-3 border rounded-lg text-sm flex justify-between items-start ${loc.status === 'error' ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-200'}`;
+                li.className = `p-3 border rounded-lg text-sm flex flex-col items-start ${bgClass}`;
 
                 let tags = '';
                 if(loc.id === 0) tags = `<span class="bg-green-100 text-green-800 px-2 py-0.5 rounded text-xs mr-2">Start</span>`;
                 if(loc.id === 1) tags = `<span class="bg-red-100 text-red-800 px-2 py-0.5 rounded text-xs mr-2">End</span>`;
 
-                let content = `<div class="w-full"><p class="font-medium text-gray-800">${tags}${loc.originalAddress}</p>`;
+                let content = `<div class="w-full flex justify-between items-start">
+                    <div>
+                        <p class="font-medium text-gray-800 mb-1">${tags}${loc.originalAddress}</p>
+                `;
 
                 if (loc.status === 'ok') {
-                    content += `<p class="text-green-600 mt-1 font-mono text-xs">Lat: ${loc.lat}, Lon: ${loc.lon}</p>`;
-                } else {
                     content += `
-                        <div class="mt-3 flex flex-wrap gap-2 items-center">
-                            <p class="text-red-600 text-xs w-full mb-1">Failed to find location. Please provide coordinates:</p>
-                            <input type="text" id="manual-lat-${loc.id}" placeholder="Latitude" class="p-1.5 border border-red-300 rounded outline-none focus:border-red-500 w-36" />
-                            <input type="text" id="manual-lon-${loc.id}" placeholder="Longitude" class="p-1.5 border border-red-300 rounded outline-none focus:border-red-500 w-36" />
-                            <button onclick="handleManualFix(${loc.id})" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded transition-colors">Save</button>
-                        </div>
+                        <p class="text-xs text-gray-600 mb-1">📍 Geocoded as: <strong>${loc.name}</strong></p>
+                        <p class="${statusColor} font-mono text-xs font-semibold">
+                            Score: ${loc.score} | Lat: ${loc.lat}, Lon: ${loc.lon}
+                        </p>
                     `;
+                    if (isLowScore) {
+                        content += `<p class="text-xs text-orange-700 mt-1">⚠️ Low confidence match. Verify the location or override coordinates below.</p>`;
+                    }
+                } else {
+                    content += `<p class="text-red-600 text-xs font-semibold">❌ Location not found. Manual override required.</p>`;
                 }
-                content += `</div>`;
+
+                content += `</div></div>`;
+
+                // Single text field override allowing spaces, tabs, or commas
+                content += `
+                    <div class="mt-3 w-full border-t ${loc.status === 'error' ? 'border-red-200' : 'border-gray-200'} pt-2 flex flex-wrap gap-2 items-center">
+                        <p class="text-gray-600 text-xs mr-2">Manual Edit:</p>
+                        <input type="text" id="manual-coord-${loc.id}" placeholder="Paste Lat, Lon (e.g. 22.31, 114.16)" class="p-1.5 border border-gray-300 rounded outline-none focus:border-blue-500 flex-1 text-xs font-mono min-w-[200px] shadow-sm" />
+                        <button onclick="handleManualFix(${loc.id})" class="bg-slate-700 hover:bg-slate-800 text-white px-3 py-1.5 rounded text-xs transition-colors shadow-sm">Apply</button>
+                    </div>
+                `;
+
                 li.innerHTML = content;
                 list.appendChild(li);
             });
@@ -361,6 +471,14 @@ Metroplaza Tower 1, 223 Hing Fong Road, Kwai Fong</textarea>
             } else {
                 document.getElementById('step-2-container').classList.add('hidden');
             }
+
+            // Single text field override (Individual Apply button removed)
+            content += `
+                <div class="mt-3 w-full border-t ${loc.status === 'error' ? 'border-red-200' : 'border-gray-200'} pt-2 flex flex-wrap gap-2 items-center">
+                    <p class="text-gray-600 text-xs mr-2">Manual Edit:</p>
+                    <input type="text" id="manual-coord-${loc.id}" placeholder="Paste Lat, Lon (e.g. 22.31, 114.16)" class="p-1.5 border border-gray-300 rounded outline-none focus:border-blue-500 flex-1 text-xs font-mono min-w-[200px] shadow-sm" />
+                </div>
+            `;
         }
 
         async function buildMatrix() {
