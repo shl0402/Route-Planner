@@ -38,14 +38,20 @@ def geocode_hk_address(address_text, page):
             try:
                 lat, lon = float(parts[-2]), float(parts[-1])
                 name = parts[0] if len(parts) > 2 else "Custom Coordinates"
-                return {"lat": lat, "lon": lon, "name": name}
+                return {"lat": lat, "lon": lon, "name": name, "score": "Exact (Coords)"}
             except ValueError:
                 pass
 
     # 2. Try OpenStreetMap (Nominatim) using Playwright JS Fetch
     try:
         nom_url = "https://nominatim.openstreetmap.org/search"
-        query_string = urllib.parse.urlencode({"q": f"{address_text}, Hong Kong", "format": "json", "limit": 1})
+        # THE FIX: Use countrycodes instead of appending ", Hong Kong"
+        query_string = urllib.parse.urlencode({
+            "q": address_text,
+            "format": "json",
+            "limit": 1,
+            "countrycodes": "hk"
+        })
         full_nom_url = f"{nom_url}?{query_string}"
 
         nom_data = page.evaluate("""async (url) => {
@@ -56,10 +62,16 @@ def geocode_hk_address(address_text, page):
         }""", full_nom_url)
 
         if len(nom_data) > 0:
-            lat = float(nom_data[0]['lat'])
-            lon = float(nom_data[0]['lon'])
-            name = nom_data[0].get('name', address_text)
-            return {"lat": lat, "lon": lon, "name": name}
+            resolved_name = nom_data[0].get('name', '')
+            is_generic_match = (resolved_name == 'Hong Kong' and address_text.lower() != 'hong kong')
+
+            if not is_generic_match:
+                return {
+                    "lat": float(nom_data[0]['lat']),
+                    "lon": float(nom_data[0]['lon']),
+                    "name": resolved_name or address_text,
+                    "score": "OSM"
+                }
     except Exception as e:
         pass
 
@@ -77,19 +89,72 @@ def geocode_hk_address(address_text, page):
         }""", full_als_url)
 
         if 'SuggestedAddress' in data and len(data['SuggestedAddress']) > 0:
-            addr_tree = data['SuggestedAddress'][0]['Address']['PremisesAddress']
-            geo = addr_tree.get('GeospatialInformation', {})
+            suggested = data['SuggestedAddress'][0]
+            score = suggested.get('ValidationInformation', {}).get('Score', 0)
+
+            addr_tree = suggested.get('Address', {}).get('PremisesAddress', {})
+
+            # THE FIX: Extract BOTH English and Chinese address trees
             eng_addr = addr_tree.get('EngPremisesAddress', {})
+            chi_addr = addr_tree.get('ChiPremisesAddress', {})
+
+            eng_name = eng_addr.get('BuildingName') or eng_addr.get('EngEstate', {}).get('EstateName') or eng_addr.get(
+                'EngVillage', {}).get('VillageName') or eng_addr.get('EngStreet', {}).get('StreetName')
+            chi_name = chi_addr.get('BuildingName') or chi_addr.get('ChiEstate', {}).get('EstateName') or chi_addr.get(
+                'ChiVillage', {}).get('VillageName') or chi_addr.get('ChiStreet', {}).get('StreetName')
+
+            eng_dist = eng_addr.get('EngDistrict', {}).get('DcDistrict') or eng_addr.get('EngStreet', {}).get(
+                'LocationName')
+            chi_dist = chi_addr.get('ChiDistrict', {}).get('DcDistrict') or chi_addr.get('ChiStreet', {}).get(
+                'LocationName')
+
+            base_name = eng_name or chi_name or "Unnamed Location"
+            district = eng_dist or chi_dist or ""
+            resolved_name = f"{base_name}, {district}" if district else base_name
+
+            geo = addr_tree.get('GeospatialInformation', {})
 
             if 'Latitude' in geo and 'Longitude' in geo:
-                lat = float(geo['Latitude'])
-                lon = float(geo['Longitude'])
-                resolved_name = eng_addr.get('BuildingName') or address_text
-                return {"lat": lat, "lon": lon, "name": resolved_name}
+                return {
+                    "lat": float(geo['Latitude']),
+                    "lon": float(geo['Longitude']),
+                    "name": resolved_name,
+                    "score": f"{score}/100"
+                }
     except Exception as e:
         pass
 
     return None
+
+
+@app.route('/geocode', methods=['POST'])
+def geocode_batch():
+    data = request.json
+    addresses = data.get('addresses', [])
+    results = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, channel="chrome", args=["--incognito"])
+        page = browser.new_page()
+        page.goto("about:blank")
+
+        for idx, addr in enumerate(addresses):
+            coords = geocode_hk_address(addr, page)
+            if coords:
+                results.append({
+                    "originalAddress": addr, "status": "ok",
+                    "lat": str(coords['lat']), "lon": str(coords['lon']), "name": coords['name'],
+                    "score": coords.get('score', 'N/A')  # Pass score to frontend
+                })
+            else:
+                results.append({
+                    "originalAddress": addr, "status": "error",
+                    "lat": "", "lon": "", "name": "", "score": "0/100"
+                })
+
+        browser.close()
+
+    return jsonify({"results": results})
 
 @app.route('/')
 def index():
@@ -98,44 +163,6 @@ def index():
         "message": "VRP Routing API is running.",
         "available_endpoints": ["POST /geocode", "POST /build-matrix", "POST /optimize"]
     })
-
-@app.route('/geocode', methods=['POST'])
-def geocode_batch():
-    data = request.json
-    addresses = data.get('addresses', [])
-    results = []
-
-    # Initialize Playwright once for the entire batch of addresses
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            channel="chrome",
-            args=["--incognito"]
-        )
-        page = browser.new_page()
-
-        # Navigate to a blank page to set up the JS environment for the entire batch
-        page.goto("about:blank")
-
-
-        for idx, addr in enumerate(addresses):
-            # Pass the single page instance to the geocoding function
-            coords = geocode_hk_address(addr, page)
-            if coords:
-                results.append({
-                    "originalAddress": addr, "status": "ok",
-                    "lat": str(coords['lat']), "lon": str(coords['lon']), "name": coords['name']
-                })
-            else:
-                results.append({
-                    "originalAddress": addr, "status": "error",
-                    "lat": "", "lon": "", "name": ""
-                })
-
-        # Clean up the browser instance after all addresses are resolved
-        browser.close()
-
-    return jsonify({"results": results})
 
 
 async def fetch_otp_route(session, from_node, to_node, params):
